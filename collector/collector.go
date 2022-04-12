@@ -105,7 +105,6 @@ func (collector *KeelCollector) Collect(ch chan<- prometheus.Metric) {
 	//Write latest value for each metric in the prometheus metric channel.
 	//Note that you can pass CounterValue, GaugeValue, or UntypedValue types here.
 	approvals := prometheus.MustNewConstMetric(collector.pendingApprovals, prometheus.GaugeValue, getPendingApprovals())
-	approvals = prometheus.NewMetricWithTimestamp(time.Now().Add(-time.Hour), approvals)
 	ch <- approvals
 
 	trackedStatsValue, err := getTrackedStats()
