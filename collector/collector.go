@@ -16,7 +16,10 @@ import (
 //Note you can also include fields of other types if they provide utility
 //but we just won't be exposing them as metrics.
 type KeelCollector struct {
-	pendingApprovals *prometheus.Desc
+	pendingApprovals   *prometheus.Desc
+	trackedImagesTotal *prometheus.Desc
+	registriesTotal    *prometheus.Desc
+	namespacesTotal    *prometheus.Desc
 }
 type approval struct {
 	ID         string `json:"id"`
@@ -49,6 +52,21 @@ type approval struct {
 type approvals []struct {
 	approval
 }
+type trackedItem struct {
+	Image        string `json:"image"`
+	Trigger      string `json:"trigger"`
+	PollSchedule string `json:"pollSchedule"`
+	Provider     string `json:"provider"`
+	Namespace    string `json:"namespace"`
+	Policy       string `json:"policy"`
+	Registry     string `json:"registry"`
+}
+
+type trackedStats struct {
+	imagesTotal     int
+	namespacesTotal int
+	registriesTotal int
+}
 
 var (
 	keelUrl  string
@@ -63,10 +81,10 @@ func NewKeelCollector(url string, user string, pass string) *KeelCollector {
 	keelUser = user
 	keelPass = pass
 	return &KeelCollector{
-		pendingApprovals: prometheus.NewDesc("keel_pending_approvals",
-			"Updates pending in Keel",
-			nil, nil,
-		),
+		pendingApprovals:   prometheus.NewDesc("keel_pending_approvals_total", "Updates pending in Keel", nil, nil),
+		trackedImagesTotal: prometheus.NewDesc("keel_tracked_images_total", "Total number of images tracked by Keel", nil, nil),
+		registriesTotal:    prometheus.NewDesc("keel_registries_total", "Images are tracked across these many registries", nil, nil),
+		namespacesTotal:    prometheus.NewDesc("keel_namespaces_total", "Images are tracked across these many namespaces", nil, nil),
 	}
 }
 
@@ -76,6 +94,9 @@ func (collector *KeelCollector) Describe(ch chan<- *prometheus.Desc) {
 
 	//Update this section with the each metric you create for a given collector
 	ch <- collector.pendingApprovals
+	ch <- collector.trackedImagesTotal
+	ch <- collector.registriesTotal
+	ch <- collector.namespacesTotal
 }
 
 //Collect implements required collect function for all promehteus collectors
@@ -83,9 +104,48 @@ func (collector *KeelCollector) Collect(ch chan<- prometheus.Metric) {
 
 	//Write latest value for each metric in the prometheus metric channel.
 	//Note that you can pass CounterValue, GaugeValue, or UntypedValue types here.
-	m1 := prometheus.MustNewConstMetric(collector.pendingApprovals, prometheus.GaugeValue, getPendingApprovals())
-	m1 = prometheus.NewMetricWithTimestamp(time.Now().Add(-time.Hour), m1)
-	ch <- m1
+	approvals := prometheus.MustNewConstMetric(collector.pendingApprovals, prometheus.GaugeValue, getPendingApprovals())
+	approvals = prometheus.NewMetricWithTimestamp(time.Now().Add(-time.Hour), approvals)
+	ch <- approvals
+
+	trackedStatsValue, err := getTrackedStats()
+	if err != nil {
+		fmt.Println("Error %s", err)
+		return
+	}
+	images := prometheus.MustNewConstMetric(collector.trackedImagesTotal, prometheus.CounterValue, float64(trackedStatsValue.imagesTotal))
+	ch <- images
+	namespaces := prometheus.MustNewConstMetric(collector.namespacesTotal, prometheus.CounterValue, float64(trackedStatsValue.namespacesTotal))
+	ch <- namespaces
+	registries := prometheus.MustNewConstMetric(collector.registriesTotal, prometheus.CounterValue, float64(trackedStatsValue.registriesTotal))
+	ch <- registries
+
+}
+
+func getTrackedStats() (trackedStats, error) {
+	var body, err = call("/v1/tracked", "GET")
+	if err != nil {
+		return trackedStats{}, err
+	}
+	var trackedItems []trackedItem
+	if err := json.Unmarshal(body, &trackedItems); err != nil { // Parse []byte to go struct pointer
+		return trackedStats{}, err
+	}
+
+	var stats trackedStats
+
+	var namespaces = Set{}
+	var registries = Set{}
+
+	for _, v := range trackedItems {
+		stats.imagesTotal++
+		namespaces.add(v.Namespace)
+		registries.add(v.Registry)
+	}
+
+	stats.namespacesTotal = len(namespaces)
+	stats.registriesTotal = len(registries)
+	return stats, err
 }
 
 func getPendingApprovals() float64 {
@@ -98,7 +158,6 @@ func getPendingApprovals() float64 {
 	if err := json.Unmarshal(body, &approvals); err != nil { // Parse []byte to go struct pointer
 		fmt.Println("Can not unmarshal JSON")
 	}
-	fmt.Println(PrettyPrint(approvals))
 	var numberOfPendingApprovals int
 	for _, v := range approvals {
 		if !v.Archived {
@@ -129,9 +188,4 @@ func call(path, method string) ([]byte, error) {
 	body, err := ioutil.ReadAll(response.Body)
 	defer response.Body.Close()
 	return body, err
-}
-
-func PrettyPrint(i interface{}) string {
-	s, _ := json.MarshalIndent(i, "", "  ")
-	return string(s)
 }
