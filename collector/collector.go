@@ -159,7 +159,7 @@ func getPendingApprovals() float64 {
 	}
 	var numberOfPendingApprovals int
 	for _, v := range approvals {
-		if !v.Archived {
+		if !v.Archived && !v.Rejected {
 			numberOfPendingApprovals++
 		}
 	}
